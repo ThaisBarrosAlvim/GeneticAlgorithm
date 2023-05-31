@@ -1,16 +1,54 @@
-# This is a sample Python script.
-
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+import pandas as pd
 
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
+def hour_to_min(hour: str):
+    return int(hour.split(':')[0]) * 60 + int(hour.split(':')[1])
 
 
-# Press the green button in the gutter to run the script.
+def min_to_hour(minutes: int):
+    return str(minutes // 60) + ':' + str(minutes % 60)
+
+
+def fitness(organism, target_time):
+    return 1 / (organism.price + 1)
+
+
+class Flight:
+    def __init__(self, index: int, dep_airport: str, arr_airport: str, dep_time: int, arr_time: int, price: int):
+        self.id = index
+        self.dep_airport = dep_airport
+        self.arr_airport = arr_airport
+        self.dep_time = dep_time
+        self.arr_time = arr_time
+        self.price = price
+
+    def dep_time_show(self):
+        return min_to_hour(self.dep_time)
+
+    def arr_time_show(self):
+        return min_to_hour(self.arr_time)
+
+    def __str__(self):
+        return f'{self.dep_airport} {self.arr_airport} {self.dep_time_show()} {self.arr_time_show()} {self.price}'
+
+    def __repr__(self):
+        return str(self)
+
+
+def read_file(path):
+    # FCO,LIS,6:19,8:13,239
+    population = []
+    df = pd.read_csv(path, sep=',', header=None)
+    for index, row in enumerate(df.iterrows()):
+        population.append(Flight(index, row[1][0], row[1][1], hour_to_min(row[1][2]), hour_to_min(row[1][3]), row[1][4]))
+    return population
+
+
+def main():
+    population = read_file('flights.txt')
+    for organism in population:
+        print(organism)
+
+
 if __name__ == '__main__':
-    print_hi('PyCharm')
-
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    main()
