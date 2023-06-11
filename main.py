@@ -64,6 +64,12 @@ class Flight:
     def __repr__(self):
         return str(self)
 
+    @classmethod
+    def from_string(cls, index, s):
+        # FCO,LIS,6:19,8:13,239
+        s = s.split(',')
+        return cls(index, s[0], s[1], hour_to_min(s[2]), hour_to_min(s[3]), int(s[4]))
+
 
 class Individual:
     PRICE_WEIGHT = 1
@@ -112,34 +118,33 @@ class Individual:
 
     @cached_property
     def fitness(self):
-
-        fitness = 0
-
-        # calculate the time gap between the flights that arrival in the target airport
+        # calculate the max arrival time to target airport
         greatest_arr_time = self.flights[0].arr_time
-        lowest_arr_time = self.flights[0].arr_time
-        fitness += self.flights[0].price * self.PRICE_WEIGHT
         for i in self.flights[1:6]:  # type: Flight
-            fitness += i.price * self.PRICE_WEIGHT
             if i.arr_time > greatest_arr_time:
                 greatest_arr_time = i.arr_time
-            if i.arr_time < lowest_arr_time:
-                lowest_arr_time = i.arr_time
-        fitness += greatest_arr_time - lowest_arr_time
 
-        # calculate the time gap between the flights that depart from the target airport
+        # calculate the max departure time from target airport
         greatest_dep_time = self.flights[6].dep_time
-        lowest_dep_time = self.flights[6].dep_time
-        fitness += self.flights[6].price * self.PRICE_WEIGHT
         for i in self.flights[7:]:  # type: Flight
-            fitness += i.price * self.PRICE_WEIGHT
             if i.dep_time > greatest_dep_time:
                 greatest_dep_time = i.dep_time
-            if i.dep_time < lowest_dep_time:
-                lowest_dep_time = i.dep_time
-        fitness += greatest_dep_time - lowest_dep_time
+
+        fitness = 0
+        # sum all differences between max and min and prices
+        for i in range(len(self.flights)):
+            fitness += self.flights[i].price * self.PRICE_WEIGHT
+            if i < 6:
+                if self.flights[i].arr_time != greatest_arr_time:
+                    fitness += greatest_arr_time - self.flights[i].arr_time
+            else:
+                if self.flights[i].dep_time != greatest_dep_time:
+                    fitness += greatest_dep_time - self.flights[i].dep_time
 
         return fitness
+
+    def copy(self):
+        return Individual(self.flights.copy())
 
     def __repr__(self):
         return str(self)
@@ -150,14 +155,12 @@ def read_file(path):
     df = pd.read_csv(path, sep=',', header=None)
     for index, row in enumerate(df.iterrows()):
         # FCO,LIS,6:19,8:13,239
-        flights[f'{row[1][0]}|{row[1][1]}'].append(Flight(index, row[1][0], row[1][1], hour_to_min(row[1][2]),
-                                                          hour_to_min(row[1][3]), row[1][4]))
+        flights[f'{row[1][0]}|{row[1][1]}'].append(Flight.from_string(index, ','.join(row[1].astype(str))))
     return flights
 
 
 def create_individual(flights: dict, target_airport: str):
     organism = Individual()
-    random.seed()
     # add random flights in order of arrive in TARGET_AIRPORT and then depart from TARGET_AIRPORT
     for k in sorted(flights, key=lambda x: target_airport == x[4:], reverse=True):
         organism.insert_flight(random.choice(flights[k]))
@@ -166,7 +169,7 @@ def create_individual(flights: dict, target_airport: str):
 
 
 def tournament_selection(population: list, size: int, k: float = 0.75):
-    new_population = set()
+    new_population = []
     for i in range(len(population)):
         tournament = random.sample(population, size)
         # the goal is to minimize the fitness
@@ -174,7 +177,7 @@ def tournament_selection(population: list, size: int, k: float = 0.75):
             winner = min(tournament, key=lambda x: x.fitness)
         else:
             winner = max(tournament, key=lambda x: x.fitness)
-        new_population.add(winner)
+        new_population.append(winner)
     return new_population
 
 
@@ -195,29 +198,50 @@ def uniform_crossover(parent1: Individual, parent2: Individual):
 
 def crossover_population(population: list, crossover_rate: float):
     new_population = []
-    for i in range(len(population)):
-        if random.random() < crossover_rate and len(population) > 1:
+    p_size = len(population)
+    population = population.copy()
+    while len(new_population) < p_size:
+        if len(population) > 1:
             parent1, parent2 = random.sample(population, 2)
             population.remove(parent1)
             population.remove(parent2)
-            child1, child2 = uniform_crossover(parent1, parent2)
-            new_population.append(child1)
-            new_population.append(child2)
-        elif len(population) >= 1:
+            if random.random() < crossover_rate:
+                child1, child2 = uniform_crossover(parent1, parent2)
+                new_population.append(child1)
+                new_population.append(child2)
+            else:
+                new_population.append(parent1)
+                new_population.append(parent2)
+        else:
             new_population.append(population[0])
+
     return new_population
 
 
-def bit_flip_mutation(organism: Individual, flights: dict, flights_to_mutate: int = 3):
-    for i in range(flights_to_mutate):
-        selected_to_mutate = random.randint(0, len(organism.flights) - 1)
-        new_flight = random.choice(flights[organism.flights[selected_to_mutate].get_group()])
-        organism.insert_flight(new_flight, selected_to_mutate)
-    return organism
+def bit_flip_mutation_all_genes(individual: Individual, flights: dict, mutation_rate: float = 0.05):
+    for i in range(len(individual.flights)):
+        if random.random() < mutation_rate:
+            possible_flights = flights[individual.flights[i].get_group()]
+            # remove the flight that is already in the individual from the possible flights to mutate
+            possible_flights = [f for f in possible_flights if f != individual.flights[i]]
+            new_flight = random.choice(possible_flights)
+            individual.insert_flight(new_flight, i)
+    return individual
 
 
-def plot_data(data: list, context_title: str = '', context_data: str = '', multiple_plots=False,
-              ylabel='Fitness', xlabel='Generation') -> None:
+def bit_flip_mutation(individual: Individual, flights: dict, genes_to_mutate: int = 1):
+    for i in range(genes_to_mutate):
+        selected_to_mutate = random.randint(0, len(individual.flights) - 1)
+        possible_flights = flights[individual.flights[selected_to_mutate].get_group()]
+        # remove the flight that is already in the individual from the possible flights to mutate
+        possible_flights = [f for f in possible_flights if f != individual.flights[selected_to_mutate]]
+        new_flight = random.choice(possible_flights)
+        individual.insert_flight(new_flight, selected_to_mutate)
+    return individual
+
+
+def plot_data(data: list, save_dir: str, context_title: str = '', context_data: str = '', multiple_plots=False,
+              ylabel='Fitness', xlabel='Generation', ) -> None:
     if multiple_plots:
         for d in data:
             plt.plot(d)
@@ -233,38 +257,57 @@ def plot_data(data: list, context_title: str = '', context_data: str = '', multi
         min_data = min(data)
     plt.axhline(min_data, color='r', linestyle='--')
     plt.text(0, min_data + 10, f'Best fitness: {min_data}')
+    # prevent same name plots, adding a number at the end
+    if os.path.exists(os.path.join(save_dir, f'{context_title}.png')):
+        i = 1
+        while os.path.exists(os.path.join(save_dir, f'{context_title}_{i}.png')):
+            i += 1
+        plt.savefig(os.path.join(save_dir, f'{context_title}_{i}.png'), bbox_inches='tight')
+    else:
+        plt.savefig(os.path.join(save_dir, f'{context_title}.png'), bbox_inches='tight')
     plt.show()
 
 
 def genetic_algorithm(population_size: int, generation_size: int, crossover_rate: float, mutation_rate: float,
-                      tournament_size: int, tournament_k: float, flights_to_mutate: int, flights: dict,
-                      target_airport: str, run_data: list = None, individuals: list = None):
+                      tournament_size: int, tournament_k: float, flights: dict, target_airport: str,
+                      genes_to_mutate: Optional[int] = None, run_data: list = None, individuals: list = None):
     population = []
 
     for i in range(population_size):
         population.append(create_individual(flights, target_airport))
 
+    best = population[0]
     data = {'avg_fitness': [], 'best': [], 'worst': []}
     for i in range(generation_size):
+        # Elitism: copy the best individual of the previous generation
+        best = best.copy()
+
+        # Selection by tournament
         population_to_crossover = tournament_selection(population, tournament_size, tournament_k)
+        # Crossover
+        population = crossover_population(population_to_crossover, crossover_rate)
 
-        best = min(population, key=lambda x: x.fitness)
+        # Mutation
+        if genes_to_mutate is None:
+            for ip in range(len(population)):
+                population[ip] = bit_flip_mutation_all_genes(population[ip], flights, mutation_rate)
+        else:
+            for ip in range(len(population)):
+                if random.random() < mutation_rate:
+                    population[ip] = bit_flip_mutation(population[ip], flights, genes_to_mutate)
+
         data['avg_fitness'].append(sum([x.fitness for x in population]) / len(population))
+        worse_individual = max(population, key=lambda x: x.fitness)
+        data['worst'].append(worse_individual.fitness)
+
+        # Elitism: replace the worst individual of the generation with the best of the previous generation
+        if worse_individual.fitness > best.fitness:
+            worse_index = population.index(worse_individual)
+            population[worse_index] = best
+
+        # Get the new best individual of the generation and add it to the data
+        best = min(population, key=lambda x: x.fitness)
         data['best'].append(best.fitness)
-        data['worst'].append(max(population, key=lambda x: x.fitness).fitness)
-        population.remove(best)
-
-        population_crossover = crossover_population(list(population_to_crossover), crossover_rate)
-        population_remaining = list(set(population) - set(population_to_crossover))
-
-        mutated_population = []
-        for individual in population_remaining:
-            if random.random() < mutation_rate:
-                population_remaining.remove(individual)
-                mutated_population.append(bit_flip_mutation(individual, flights, flights_to_mutate))
-
-        population = list(population_crossover) + mutated_population + population_remaining
-        population.append(best)
 
     best = min(population, key=lambda x: x.fitness)
     if individuals is not None and run_data is not None:
@@ -276,44 +319,75 @@ def genetic_algorithm(population_size: int, generation_size: int, crossover_rate
 
 def main2():
     # test fitness of individual
-    # 10 LIS,FCO,12:18,14:56,172
-    # 30 MAD,FCO,12:44,14:17,134
-    # 48 CDG,FCO,11:28,14:40,248
-    # 70 DUB,FCO,12:34,15:02,109
-    # 88 BRU,FCO,10:30,14:57,290
-    # 110 LHR,FCO,12:08,14:59,149
-    # 7 FCO,LIS,11:07,13:24,171
-    # 27 FCO,MAD,10:33,13:11,132
-    # 47 FCO,CDG,11:08,14:38,262
-    # 67 FCO,DUB,10:33,12:03,74
-    # 87 FCO,BRU,10:51,14:16,256
-    # 107 FCO,LHR,10:32,13:16,139
-    fl = [Flight(1, 'LIS', 'FCO', hour_to_min('12:18'), hour_to_min('14:56'), 172),
-          Flight(1, 'MAD', 'FCO', hour_to_min('12:44'), hour_to_min('14:17'), 134),
-          Flight(1, 'CDG', 'FCO', hour_to_min('11:28'), hour_to_min('14:40'), 248),
-          Flight(1, 'DUB', 'FCO', hour_to_min('12:34'), hour_to_min('15:02'), 109),
-          Flight(1, 'BRU', 'FCO', hour_to_min('10:30'), hour_to_min('14:57'), 290),
-          Flight(1, 'LHR', 'FCO', hour_to_min('12:08'), hour_to_min('14:59'), 149),
-          Flight(1, 'FCO', 'LIS', hour_to_min('11:07'), hour_to_min('13:24'), 171),
-          Flight(1, 'FCO', 'MAD', hour_to_min('10:33'), hour_to_min('13:11'), 132),
-          Flight(1, 'FCO', 'CDG', hour_to_min('11:08'), hour_to_min('14:38'), 262),
-          Flight(1, 'FCO', 'DUB', hour_to_min('10:33'), hour_to_min('12:03'), 74),
-          Flight(1, 'FCO', 'BRU', hour_to_min('10:51'), hour_to_min('14:16'), 256),
-          Flight(1, 'FCO', 'LHR', hour_to_min('10:32'), hour_to_min('13:16'), 139)
-          ]
-    print(fl)
-    ind = Individual(fl)
+
+    # Best fitness: 2326
+    ind1_str = """
+    LIS,FCO,12:18,14:56,172
+    MAD,FCO,12:44,14:17,134
+    CDG,FCO,11:28,14:40,248
+    DUB,FCO,12:34,15:02,109
+    BRU,FCO,10:30,14:57,290
+    LHR,FCO,12:08,14:59,149
+    FCO,LIS,8:04,10:59,136
+    FCO,MAD,7:50,10:08,164
+    FCO,CDG,8:23,11:07,143
+    FCO,DUB,8:23,10:28,149
+    FCO,BRU,7:57,11:15,347
+    FCO,LHR,8:19,11:16,122"""
+
+    fl1 = [Flight.from_string(1, f.strip()) for f in ind1_str.split('\n')[1:]]
+    print(fl1)
+    ind1 = Individual(fl1)
+    print('IND1: Fitness:', ind1.fitness)
+    print(ind1.full_str(False), end='\n\n')
+    print(ind1.full_str(True), end='\n\n')
+
+    ind2_str = """
+    15,LIS,FCO,16:51,19:09,147
+    33,MAD,FCO,15:58,18:40,173
+    53,CDG,FCO,15:34,18:11,326
+    75,DUB,FCO,17:11,18:30,108
+    91,BRU,FCO,13:54,18:02,294
+    115,LHR,FCO,17:08,19:08,262
+    2,FCO,LIS,8:04,10:59,136
+    22,FCO,MAD,7:50,10:08,164
+    42,FCO,CDG,8:23,11:07,143
+    62,FCO,DUB,8:23,10:28,149
+    84,FCO,BRU,9:49,13:51,229
+    102,FCO,LHR,8:19,11:16,122"""
+    # index, origin, destination, departure, arrival, price
+    # remove index from string and add to a list of index
+    indexes = [int(i.strip().split(',', 1)[0]) for i in ind2_str.split('\n')[1:]]
+    fl2 = [Flight.from_string(indexes[i], ",".join(f.strip().split(',')[1:])) for i, f in
+           enumerate(ind2_str.split('\n')[1:])]
+    print(fl2)
+    ind = Individual(fl2)
+    print('IND2: Fitness:', ind.fitness)
     print(ind.full_str(False), end='\n\n')
-    print(ind.full_str(True))
-    print(ind.fitness)
+    print(ind.full_str(True), end='\n\n')
 
 
 def main():
     # Test parameters
-    reports_dir = 'reports'
+    date = datetime.datetime.today().strftime("%d-%m_%H-%M-%S")
+    reports_dir = os.path.join('reports', date)
+    plot_dir = os.path.join(reports_dir, 'plots')
     make_reports = True  # create file with all test results or print
+    if make_reports:
+        # check if dir exists
+        if not os.path.exists(reports_dir):
+            os.makedirs(reports_dir)
+        if not os.path.exists(plot_dir):
+            os.makedirs(plot_dir)
     tests = 30
-    plot_all = False  # will plot all best individuals of each run
+
+    # plot parameters
+    plot_all = True  # will plot all best individuals of each run
+    plot_all_best_fitness = True
+    plot_all_fitness_through_generations = True
+    plot_all_avg_fitness_through_generations = True
+
+    # Threading parameters
     use_threads = False
     max_threads = 4
 
@@ -322,14 +396,14 @@ def main():
     target_airport = 'FCO'
 
     # Genetic algorithm parameters
-    Individual.PRICE_FACTOR = 1
-    population_size = 20
-    crossover_rate = 0.7
+    Individual.PRICE_WEIGHT = 1
+    population_size = 1000
+    crossover_rate = 0.8
     mutation_rate = 0.05
-    flights_to_mutate = 1
-    generation_size = 350
-    tournament_size = 6
-    tournament_k = 0.99  # higher k -> higher chance of selecting the best individual in the tournament
+    genes_to_mutate = None  # None -> all genes can mutate
+    generation_size = 50
+    tournament_size = 15
+    tournament_k = 0.61  # higher k -> higher chance of selecting the best individual in the tournament
 
     # Read file
     flights = read_file(data_file)
@@ -338,13 +412,20 @@ def main():
     individuals = []  # list of best individuals of each run
     threads = []
     runs_data = []  # list of data of each run (to plot info of each run)
+    random.seed()
+
     if not use_threads:
         for i in range(tests):
             tini = time.time()
             best, data = genetic_algorithm(population_size, generation_size, crossover_rate, mutation_rate,
-                                           tournament_size, tournament_k, flights_to_mutate, flights, target_airport)
+                                           tournament_size, tournament_k, flights, target_airport, genes_to_mutate)
 
             print(f'Test({i + 1}): Best fitness: {best.fitness}, takes: {(time.time() - tini):.3f} seconds')
+            if plot_all:
+                plot_data(data['best'], plot_dir, f'{generation_size} Generations',
+                          f'Population size: {population_size},'
+                          f' Crossover rate: {crossover_rate},'
+                          f' Mutation rate: {mutation_rate}')
             individuals.append(best)
             runs_data.append(data)
     else:
@@ -354,8 +435,8 @@ def main():
                 unique_threads += 1
                 thread = threading.Thread(target=genetic_algorithm,
                                           args=(population_size, generation_size, crossover_rate,
-                                                mutation_rate, tournament_size, tournament_k, flights_to_mutate,
-                                                flights, target_airport, runs_data, individuals),
+                                                mutation_rate, tournament_size, tournament_k,
+                                                flights, target_airport, genes_to_mutate, runs_data, individuals),
                                           name=f'GA{unique_threads}')
                 threads.append(thread)
                 thread.start()
@@ -369,27 +450,28 @@ def main():
 
     end = time.time()
     runs_results = [individual.fitness for individual in individuals]
-    # plot data of each run
-    if plot_all:
-        for run_data in runs_data:
-            plot_data(run_data['best'], f'{generation_size} Generations', f'Population size: {population_size},'
-                                                                          f' Crossover rate: {crossover_rate},'
-                                                                          f' Mutation rate: {mutation_rate}')
     # plot data of all runs
-    plot_data(runs_results, f'All Tests Best Fitness', f'Population size: {population_size},'
-                                                       f' Crossover rate: {crossover_rate},'
-                                                       f' Mutation rate: {mutation_rate}',
-              ylabel='Fitness', xlabel='Test number')
+    if plot_all_best_fitness:
+        plot_data(runs_results, plot_dir, f'All Tests Best Fitness', f'Population size: {population_size},'
+                                                                     f' Crossover rate: {crossover_rate},'
+                                                                     f' Mutation rate: {mutation_rate}',
+                  ylabel='Fitness', xlabel='Test number')
     # plot all in one graph
-    plot_data([rd['best'] for rd in runs_data],
-              f'All Tests Best Fitness', f'Population size: {population_size},'
-                                         f' Crossover rate: {crossover_rate},'
-                                         f' Mutation rate: {mutation_rate}', multiple_plots=True)
+    if plot_all_fitness_through_generations:
+        plot_data([rd['best'] for rd in runs_data], plot_dir,
+                  f'All Tests Best Fitness Through Generations', f'Population size: {population_size},'
+                                                                 f' Crossover rate: {crossover_rate},'
+                                                                 f' Mutation rate: {mutation_rate}',
+                  multiple_plots=True,
+                  ylabel='Fitness', xlabel='Generation')
 
-    plot_data([rd['avg_fitness'] for rd in runs_data], f'All Tests Average Fitness',
-              f'Population size: {population_size},'
-              f' Crossover rate: {crossover_rate},'
-              f' Mutation rate: {mutation_rate}', ylabel='Average Fitness', xlabel='Generation', multiple_plots=True)
+    if plot_all_avg_fitness_through_generations:
+        plot_data([rd['avg_fitness'] for rd in runs_data], plot_dir,
+                  f'All Tests Average Fitness Through Generations',
+                  f'Population size: {population_size},'
+                  f' Crossover rate: {crossover_rate},'
+                  f' Mutation rate: {mutation_rate}', ylabel='Average Fitness', xlabel='Generation',
+                  multiple_plots=True)
 
     # Write results to file
     avg = sum(runs_results) / len(runs_results)
@@ -400,7 +482,6 @@ def main():
     median = statistics.median(runs_results)
     tdelta = end - start
     avg_time = tdelta / tests
-    date = datetime.datetime.today().strftime("%d-%m_%H:%M")
 
     individuals_txt = "\n\n".join([f"Individual {i + 1}: {individuals[i].full_str(time_sec=False)}"
                                    for i in range(len(individuals))])
@@ -413,7 +494,7 @@ def main():
            f'\n\tgeneration_size={generation_size}'
            f'\n\tcrossover_rate={crossover_rate}'
            f'\n\tmutation_rate={mutation_rate}'
-           f'\n\tflights_to_mutate={flights_to_mutate}'
+           f'\n\tgenes_to_mutate={genes_to_mutate}'
 
            f'\nTournament selection:'
            f'\n\ttournament_size={tournament_size}'
@@ -434,12 +515,10 @@ def main():
 
     # write to file
     if make_reports:
-        # check if dir exists
-        if not os.path.exists(reports_dir):
-            os.makedirs(reports_dir)
-        file_name = f'{reports_dir}/{date}_best{best}_var{stdev:.2f}_avg{avg:.2f}_ga_p{population_size}' \
-                    f'_g{generation_size}_cr{crossover_rate}_mr{mutation_rate}.txt'
-        with open(file_name, 'w') as file:
+        file_name = f'{date}_best{best}_var{stdev:.2f}_avg{avg:.2f}_ga_p{population_size}' \
+                    f'_g{generation_size}_cr{crossover_rate}_mr{mutation_rate}_tz{tournament_size}' \
+                    f'_gtm{genes_to_mutate if genes_to_mutate else "N"}_tk{tournament_k:.2f}.txt'
+        with open(os.path.join(reports_dir, file_name), 'w') as file:
             file.write(txt)
 
 
