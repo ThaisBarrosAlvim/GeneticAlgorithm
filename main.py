@@ -380,11 +380,11 @@ def test_runner(tests: int, data_path: str, ):
     GeneticAlgorithmMin.PRICE_WEIGHT = 1
 
     # Genetic algorithm parameters
-    population_size = 1000
+    population_size = 1500
     crossover_rate = 0.8
     mutation_rate = 0.05
     genes_to_mutate = None  # None -> all genes can mutate
-    generation_size = 20
+    generation_size = 15
     tournament_size = 15
     tournament_k = 0.61  # higher k -> higher chance of selecting the best individual in the tournament
 
